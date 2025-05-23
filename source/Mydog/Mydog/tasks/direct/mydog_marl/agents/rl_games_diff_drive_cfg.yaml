@@ -54,7 +54,7 @@ params:
 
   # 5. 检查点加载配置
   load_checkpoint: True  # 是否从检查点加载模型
-  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-05-22_22-03-51/nn/diff_drive_direct.pth'  # 检查点路径
+  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-05-22_22-03-51/nn/convert.pth'  # 检查点路径
 
   # 6. 训练配置
   config:
@@ -96,7 +96,7 @@ params:
     # 6.5 PPO 参数
     e_clip: 0.2  # PPO 剪辑范围
     horizon_length: 64  # PPO 轨迹长度
-    minibatch_size: 64  # 最小批量大小
+    minibatch_size: 32768  # 最小批量大小
     mini_epochs: 5  # 每个批量的训练轮次
     critic_coef: 2.0  # 价值函数损失系数
     clip_value: True  # 是否裁剪价值函数输出
