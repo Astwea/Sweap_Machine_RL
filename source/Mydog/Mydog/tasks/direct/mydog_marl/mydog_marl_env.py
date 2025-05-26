@@ -82,6 +82,8 @@ class MydogMarlEnv(DirectRLEnv):
         self._trajectories = torch.zeros(self.num_envs, self.cfg.num_waypoints*self.cfg.num_interp, 2, device=self.device)
         self._current_wp_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._prev_wp_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.seed = 10
+        self.epoch = 0
 
         self.dist_to_target = None
         self._prev_dist_to_target = torch.zeros(self.num_envs, device=self.device)
@@ -92,7 +94,7 @@ class MydogMarlEnv(DirectRLEnv):
         self.sin_phi = torch.zeros(self.num_envs, 1, device=self.device)
         # 1.3 初始化日志记录
         # - 记录每个回合中的关键性能指标
-        self.writer = SummaryWriter(log_dir=f"{cfg.log_dir}/{time.strftime('%Y-%m-%d_%H-%M-%S')}")
+        self.writer = SummaryWriter(log_dir=f"{cfg.log_dir}/{time.strftime('%Y-%m-%d_%H-%M-%S')}/summary")
         self.begin_time = time.time()
         self.global_step = 0
         self._episode_sums = {
@@ -395,17 +397,16 @@ class MydogMarlEnv(DirectRLEnv):
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-
-        self.debug_draw.clear_lines()
+        if self.debug_draw:
+            self.debug_draw.clear_lines()
         num_points = self.cfg.num_waypoints
-
 
         for i, env_id in enumerate(env_ids):
             start = self._robot.data.default_root_state[env_id, :2]
 
             # 随机生成终点
             traj = self.generate_random_walk_trajectory(start, num_points=num_points, num_interp=self.cfg.num_interp,
-                                                         step_size=self.cfg.step_size, seed=1)
+                                                         step_size=self.cfg.step_size, seed=self.seed)
 
             self._trajectories[env_id] = traj
             self._current_wp_idx[env_id] = 0

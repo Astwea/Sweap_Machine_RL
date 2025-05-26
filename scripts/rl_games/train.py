@@ -89,6 +89,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg["params"]["config"]["max_epochs"] = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg["params"]["config"]["max_epochs"]
     )
+    args_cli.checkpoint = agent_cfg['params']['load_path']
+    print(args_cli.checkpoint)
+    if agent_cfg["params"].get("load_checkpoint", False) and args_cli.checkpoint is None:
+        print(f"[INFO]: Falling back to YAML checkpoint: {agent_cfg['params']['load_path']}")
     if args_cli.checkpoint is not None:
         resume_path = retrieve_file_path(args_cli.checkpoint)
         agent_cfg["params"]["load_checkpoint"] = True

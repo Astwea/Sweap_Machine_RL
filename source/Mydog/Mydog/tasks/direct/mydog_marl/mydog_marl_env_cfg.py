@@ -65,7 +65,7 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     # 4.1 机器人关节参数
     robot: ArticulationCfg = SAODI_CONFIG.replace(prim_path="/World/envs/env_.*/Robot")
     log_dir = "runs/logs"  # 日志目录
-    num_waypoints = 10  # 路径点数量
+    num_waypoints = 4  # 路径点数量
     num_interp = 10  # 插值数量
     step_size = 3.0  # 步长
     # 5. 奖励缩放系数
