@@ -20,7 +20,10 @@ params:
   network:
     name: actor_critic  # 使用 Actor-Critic 网络结构
     separate: False  # 是否使用独立的 actor 和 critic 网络
-
+    rnn:
+      name: gru
+      units: 128
+      layers: 1   # 可选，默认=1
     # 4.3 连续动作空间配置
     space:
       continuous:
@@ -42,7 +45,7 @@ params:
     mlp:
       units: [128, 128]  # MLP 隐藏层神经元数量
       activation: elu  # 使用 ELU 激活函数
-      d2rl: False  # 是否使用 D2RL 架构增强（Deep Dense ReLU）
+      d2rl: True  # 是否使用 D2RL 架构增强（Deep Dense ReLU）
 
       # 4.4.1 权重初始化
       initializer:
@@ -53,8 +56,8 @@ params:
         name: None  # 不使用正则化
 
   # 5. 检查点加载配置
-  load_checkpoint: True  # 是否从检查点加载模型
-  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-05-22_22-03-51/nn/converted21.pth'  # 检查点路径
+  load_checkpoint: False # 是否从检查点加载模型
+  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-03_12-58-53/nn/diff_drive_direct.pth'  # 检查点路径
 
   # 6. 训练配置
   config:
@@ -75,7 +78,7 @@ params:
 
     # 6.3 奖励设置
     reward_shaper:
-      scale_value: 0.6  # 奖励缩放系数
+      scale_value: 1.0 # 奖励缩放系数
 
     # 6.4 策略优化参数
     normalize_advantage: True  # 归一化优势函数
@@ -90,7 +93,7 @@ params:
     save_best_after: 200  # 在指定轮次后保存最佳模型
     save_frequency: 100  # 每隔多少轮保存模型
     grad_norm: 1.0  # 梯度裁剪阈值
-    entropy_coef: 0.002  # 熵奖励系数（鼓励探索）
+    entropy_coef: 0.007  # 熵奖励系数（鼓励探索）
     truncate_grads: True  # 是否裁剪梯度
 
     # 6.5 PPO 参数

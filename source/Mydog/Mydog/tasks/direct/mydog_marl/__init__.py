@@ -13,7 +13,7 @@ from . import agents
 
 
 gym.register(
-    id="Template-Mydog-Marl-Direct-v0",
+    id="Template-Mydog-Marl-Direct",
     entry_point=f"{__name__}.mydog_marl_env:MydogMarlEnv",
     disable_env_checker=True,
     kwargs={

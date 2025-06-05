@@ -38,6 +38,8 @@ class EventCfg:
         },
     )
 
+
+
 @configclass
 class MydogMarlEnvCfg(DirectRLEnvCfg):
     # 1. 环境参数配置
@@ -46,7 +48,7 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     decimation = 2  # 动作执行间隔（仿真步长倍数）
     action_scale = 1.0  # 线速度和角速度的缩放系数
     action_space = 2  # 动作空间维度 (线速度, 角速度)
-    observation_space = 21  # 观测空间维度 (x, y, yaw, 速度)
+    observation_space = 25  # 观测空间维度 (x, y, yaw, 速度)
     state_space = 0  # 全局状态空间维度，0表示未定义
     wheel_base = 0.233  # 机器人轮距（米）
     # 2. 仿真配置
@@ -65,17 +67,13 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     # 4.1 机器人关节参数
     robot: ArticulationCfg = SAODI_CONFIG.replace(prim_path="/World/envs/env_.*/Robot")
     log_dir = "runs/logs"  # 日志目录
-    num_waypoints = 4  # 路径点数量
-    num_interp = 10  # 插值数量
-    step_size = 3.0  # 步长
+    num_waypoints = 3 # 路径点数量
+    num_interp = 2 # 插值数量
+    step_size = 1.5  # 步长
     # 5. 奖励缩放系数
     # - 用于平衡不同奖励项的相对重要性
-    lin_vel_reward_scale = 1 # 线速度跟踪奖励缩放系数
-    ang_vel_reward_scale = 1 # 角速度跟踪奖励缩放系数
-    action_rate_reward_scale = -1  # 动作变化惩罚缩放系数
-    distance_scale = 50
+    traj_track_scale = 50.0  # 已经内嵌在 reward 中了，可以移除
+    traj_done_bonus = 0.0000001  # 写在 reward 里
+    action_magnitude_scale = 0.1
+    action_rate_reward_scale = 0.1
     direction_scale = 50.0
-    traj_progress_scale = 50.0
-    still_penalty_scale = 5
-    action_magnitude_scale = 0.2
-

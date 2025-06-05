@@ -91,7 +91,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
     args_cli.checkpoint = agent_cfg['params']['load_path']
     print(args_cli.checkpoint)
-    if agent_cfg["params"].get("load_checkpoint", False) and args_cli.checkpoint is None:
+    if not agent_cfg["params"]["load_checkpoint"]:
+        args_cli.checkpoint = None
         print(f"[INFO]: Falling back to YAML checkpoint: {agent_cfg['params']['load_path']}")
     if args_cli.checkpoint is not None:
         resume_path = retrieve_file_path(args_cli.checkpoint)

@@ -4,13 +4,15 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor
-from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+from isaaclab.sim.spawners.from_files import spawn_ground_plane,spawn_from_usd, UsdFileCfg, GroundPlaneCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab.assets import AssetBaseCfg
 from .mydog_marl_env_cfg import MydogMarlEnvCfg
 
 try:
     from isaacsim.util.debug_draw import _debug_draw as debug_draw
+    from isaaclab.devices import Se2Keyboard
     debug_draw_available = True
 except ImportError:
     debug_draw_available = False
@@ -26,8 +28,7 @@ import math
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline
 import numpy as np
-
-
+import random
 
 def define_markers(path, idx) -> VisualizationMarkers:
     """Define markers with various different shapes."""
@@ -80,7 +81,7 @@ class MydogMarlEnv(DirectRLEnv):
 
         self._commands = torch.zeros(self.num_envs, 2, device=self.device)  # (x, y, z)
         self._trajectories = torch.zeros(self.num_envs, self.cfg.num_waypoints*self.cfg.num_interp, 2, device=self.device)
-        self._current_wp_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._current_wp_idx = torch.ones(self.num_envs, dtype=torch.long, device=self.device)
         self._prev_wp_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.seed = 10
         self.epoch = 0
@@ -99,25 +100,29 @@ class MydogMarlEnv(DirectRLEnv):
         self.global_step = 0
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) 
-            for key in ["track_lin_vel", "track_ang_vel", "forward_reward","action_rate_l2",
-                         "undesired_contacts","dist_to_target","action_publilsh","stationary_penalty",
-                         "traj_progress"]
+            for key in ["tracking_reward","direction_reward","goal_bias","action_rate_penalty","action_mag_penalty"]
         }
         self.joint_idx, _ = self._robot.find_joints(['left_wheel_joint', 'right_wheel_joint'])
         self.positions = self._robot.data.root_state_w[:, :2]
         self.yaw  = self._robot.data.root_state_w[:, 3:7]
         if debug_draw_available:
             self.debug_draw = debug_draw.acquire_debug_draw_interface()
+            self.keyboard = Se2Keyboard(v_y_sensitivity=0.8)
         else:
             self.debug_draw = None
+            self.keyboard = None
         self.count = 0
-
+        
     # 2. 场景设置
     def _setup_scene(self):
         # 2.1 初始化机器人模型
         self._robot = Articulation(self.cfg.robot)
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        
+        # spawn_ground_plane(prim_path="/World/ground", cfg=Envconfig())
+        spawn_ground_plane(
+            prim_path="/World/ground",
+            cfg=GroundPlaneCfg(color=(0.5, 0.5, 0.5),
+                               size=(300, 300))
+        )
         self.scene.articulations["robot"] = self._robot
         
         # 2.2 初始化接触传感器
@@ -167,7 +172,10 @@ class MydogMarlEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         # 3.1 缓存当前动作
         # - 记录输入的动作，以便后续使用
-        self._actions = actions.clone().clamp(-1.0, 1.0)  # 限制动作范围
+        # action = self.keyboard.advance()
+        # vx, wz = action[0], action[1]
+        # self._actions = torch.tensor(np.tile([vx, wz], (self.num_envs, 1)), dtype=torch.float32, device=self.device)
+        self._actions = actions.clone().clamp(-1.0, 1.0)
 
     def adjust_yaw_with_velocity_tensor(self, quat, vx):
         # 提取四元数分量
@@ -227,117 +235,123 @@ class MydogMarlEnv(DirectRLEnv):
 
     # 5. 获取观测数据
     def _get_observations(self) -> dict:
-        # 5.1 更新前一次动作
         self._previous_actions = self._actions.clone()
-        future_len = 4  # 当前 + 后续 2 个轨迹点
-        traj_feats = []
 
+        future_len = 4  # 当前点 + 未来3个轨迹点
+        traj_points = []
+        traj_deltas = []
+        traj_len = self._trajectories.shape[1]
+        next_idx = torch.clamp(self._current_wp_idx + 1, max=traj_len - 1)
+        dist_curr = torch.norm(self.positions - self._trajectories[range(self.num_envs), self._current_wp_idx], dim=1)
+        dist_next = torch.norm(self.positions - self._trajectories[range(self.num_envs), next_idx], dim=1)
+
+        # 如果离下一个更近，就推进 index
+        advance_condition = (dist_next + 0.05 < dist_curr) & (dist_curr < 0.4)
+
+        self._current_wp_idx = torch.where(
+            advance_condition,
+            torch.clamp(self._current_wp_idx + 1, max=traj_len - 1),
+            self._current_wp_idx
+        )
         for i in range(future_len):
             idx = torch.clamp(self._current_wp_idx + i, max=self._trajectories.shape[1] - 1)
-            traj_feats.append(self._trajectories[range(self.num_envs), idx])
-        traj_feats = torch.cat(traj_feats, dim=-1)  # shape: [num_envs, future_len × 2]
-        # 5.2 构建观测数据
-        # - 包含机器人根节点的线速度、角速度和当前动作
-        obs = torch.cat([
-            self._robot.data.root_lin_vel_b[:, :2],  # 根节点线速度 (x, y)
-            self._robot.data.root_ang_vel_b[:, 2:],  # 根节点角速度 (yaw)
-            self._actions,  # 当前动作 (线速度, 角速度)
-            traj_feats,  # 目标位置 (x, y)
-            self.positions,
-            torch.cos(self.quaternion_to_yaw(self.yaw)).unsqueeze(1), 
-            torch.sin(self.quaternion_to_yaw(self.yaw)).unsqueeze(1),
-            self.cos_phi, 
-            self.sin_phi,  # 机器人朝向 (cos, sin)
-            self._previous_actions,
+            point = self._trajectories[torch.arange(self.num_envs), idx]
+            traj_points.append(point)
+            if i > 0:
+                prev_idx = torch.clamp(self._current_wp_idx + i - 1, max=self._trajectories.shape[1] - 1)
+                prev_point = self._trajectories[torch.arange(self.num_envs), prev_idx]
+                traj_deltas.append(point - prev_point)
+        
+        # 目标点信息
+        traj_feats = torch.cat(traj_points, dim=-1)       # [num_envs, 2 * future_len]
+        traj_delta_feats = torch.cat(traj_deltas, dim=-1) # [num_envs, 2 * (future_len - 1)]
 
-              # 机器人朝向 (cos, sin)
+        # 当前与最近目标点之间的误差向量（可以理解为目标误差）
+        relative_error = traj_points[0] - self.positions  # [num_envs, 2]
+
+        # yaw 方向 → cos/sin(yaw)
+        yaw_tensor = self.quaternion_to_yaw(self.yaw)
+        cos_yaw = torch.cos(yaw_tensor).unsqueeze(1)
+        sin_yaw = torch.sin(yaw_tensor).unsqueeze(1)
+
+        obs = torch.cat([
+            self._robot.data.root_lin_vel_b[:, :2],   # 线速度 (2,)
+            self._robot.data.root_ang_vel_b[:, 2:],   # 角速度 (1,)
+            self._actions,                            # 当前动作 (2,)
+            self._previous_actions,                   # 上一步动作 (2,)
+            relative_error,                           # 当前误差 (2,)
+            traj_feats,                               # 当前+未来轨迹点 (2×4)
+            traj_delta_feats,                         # 轨迹趋势 (2×3)
+            cos_yaw, sin_yaw                          # 姿态信息 (2,)
         ], dim=-1)
 
-        # 5.3 返回政策输入
         return {"policy": obs}
 
     # 6. 计算奖励
     def _get_rewards(self) -> torch.Tensor:
-        # 6.1 线速度跟踪奖励
         self.global_step += 1
+        # === 轨迹误差 ===
+        id = torch.clamp(self._current_wp_idx, max=self._trajectories.shape[1] - 1)
+        current_target = self._trajectories[torch.arange(self.num_envs), id]
+        idx_next = torch.clamp(self._current_wp_idx + 1, max=self._trajectories.shape[1] - 1)
+        next_target = self._trajectories[torch.arange(self.num_envs), idx_next]
+        
+        tracking_error = torch.norm(self.positions - current_target, dim=1)
+        self.dist_to_target = tracking_error
+        tracking_reward = torch.exp(-tracking_error / 1.5)  # 更稳定，更平滑
 
-        lin_vel_error = torch.square(self._actions[:, 0] - self._robot.data.root_lin_vel_b[:, 0])
-        lin_vel_reward = torch.exp(-lin_vel_error / 0.25)
 
-        # 6.2 角速度跟踪奖励
-        ang_vel_error = torch.square(self._actions[:, 1] - self._robot.data.root_ang_vel_b[:, 2])
-        ang_vel_reward = torch.exp(-ang_vel_error / 0.25)
-        forward_reward = torch.clip(self._robot.data.root_lin_vel_b[:, 0], 0, 1.0) 
-        # 6.3 动作变化惩罚
-        action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
-        direction_to_target = self.positions - self._trajectories[range(self.num_envs), self._current_wp_idx]
-        self.dist_to_target = torch.norm(direction_to_target, dim=1)
-        delta_dist = self._prev_dist_to_target - self.dist_to_target
+        # === 到达终点奖励 ===
+        done_mask = (self._current_wp_idx >= self._trajectories.shape[1]) & (tracking_error < 0.2)
+        bias = torch.zeros_like(tracking_reward)
+        bias[tracking_error < 0.2] = 1.0  # 每个点都能触发，不止终点
+        bias[done_mask] = 5.0 # 终点 bonus
 
-        # 更新缓存
-        self._prev_dist_to_target = self.dist_to_target.clone()
-        dist_reward = torch.tanh(delta_dist)
-        forward_vector = self.quaternion_to_forward_vector(self.yaw)
+        # === 朝向奖励 ===
+        forward_vector = self.quaternion_to_forward_vector(self.yaw)[:, :2]
+        direction = current_target - self.positions
+        traj_tangent = next_target - current_target
+        traj_tangent = traj_tangent / (torch.norm(traj_tangent, dim=1, keepdim=True) + 1e-6)
+        traj_alignment = torch.sum(forward_vector * traj_tangent, dim=1)
 
-        # 5. 计算方向奖励 (余弦相似度)
-        dot_product = torch.sum(forward_vector[:, :2] * direction_to_target, dim=1)
-        direction_norm = torch.norm(forward_vector[:, :2], dim=1) * torch.norm(direction_to_target, dim=1)
-        cos_theta = dot_product / (direction_norm + 1e-6)
-
-        # 设置阈值：只有在 ±30° 以内才给奖励
-        direction_reward = torch.where(
-            cos_theta >= 0.866,           # cos(30°) ≈ 0.866
-            (cos_theta - 0.866) / (1.0 - 0.866),  # 映射到 [0, 1]
-            -torch.ones_like(cos_theta) * 0.5     # 否则惩罚（你可以设为0或负数）
+        traj_dir_reward = ((traj_alignment + 1) / 2.0)
+        cos_theta = torch.sum(forward_vector * direction, dim=1) / (
+            torch.norm(forward_vector, dim=1) * torch.norm(direction, dim=1) + 1e-6
         )
-        bias = torch.zeros_like(direction_reward, dtype=torch.float)
-        bias[self.dist_to_target<0.1] = 1.0
+        direction_reward = ((cos_theta + 1.0) / 2.0) # 映射到 [0,2]
 
-        # 6.4 动作幅度惩罚
+        # === 动作惩罚项 ===
+        action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
         action_magnitude = torch.norm(self._actions, dim=1)
-        action_magnitude_reward = -self.cfg.action_magnitude_scale * action_magnitude
+        action_rate_penalty = -action_rate
+        action_mag_penalty = -action_magnitude
 
-        stationary_mask = (torch.norm(self._robot.data.root_lin_vel_b[:, :2], dim=1) < 0.05)
-        stationary_penalty = -self.cfg.still_penalty_scale * stationary_mask.float()
-
-        traj_progress_reward = (self._current_wp_idx.float() - self._prev_wp_idx.float()) / self.cfg.num_waypoints
-        traj_progress_reward = torch.clamp(traj_progress_reward, min=0.0, max=1.0)
-        self._prev_wp_idx = self._current_wp_idx.clone()
-
-        traj_done_bonus = torch.zeros_like(self.dist_to_target)
-        done_mask = (self._current_wp_idx >= self._trajectories.shape[1] - 1) & (self.dist_to_target < 0.2)
-        traj_done_bonus[done_mask] = 5.0
-
-        # 6.4 计算总奖励
+        # === 合并奖励 ===
         rewards = {
-            "track_lin_vel": lin_vel_reward * self.cfg.lin_vel_reward_scale * self.step_dt,
-            "track_ang_vel": ang_vel_reward * self.cfg.ang_vel_reward_scale * self.step_dt,
-            "forward_reward": forward_reward * self.cfg.lin_vel_reward_scale * self.step_dt,
-            "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
-            "dist_to_target": dist_reward * self.cfg.distance_scale * self.step_dt + direction_reward * self.cfg.direction_scale * self.step_dt + bias,
-            "action_publilsh":action_magnitude_reward* self.cfg.action_magnitude_scale * self.step_dt,
-            "stationary_penalty": stationary_penalty * self.cfg.still_penalty_scale * self.step_dt,
-            "traj_progress": traj_progress_reward * self.cfg.traj_progress_scale * self.step_dt + traj_done_bonus,
+            "tracking_reward": tracking_reward * self.cfg.traj_track_scale * self.step_dt,
+            "direction_reward": direction_reward * self.cfg.direction_scale * self.step_dt + traj_dir_reward * self.cfg.direction_scale * self.step_dt,
+            "goal_bias": bias * self.cfg.traj_done_bonus,
+            "action_rate_penalty": action_rate_penalty * self.cfg.action_rate_reward_scale * self.step_dt,
+            "action_mag_penalty": action_mag_penalty * self.cfg.action_magnitude_scale * self.step_dt,
         }
-        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-        # 6.5 更新回合累计奖励
-        for key, value in rewards.items():
-            self._episode_sums[key] += value
-        episode_reward = reward.mean().item()
-        self.writer.add_scalar("Reward/Total", episode_reward, self.global_step)
-        for key, value in rewards.items():
-            self.writer.add_scalar(f"Reward/{key}", value.mean().item(), self.global_step)
-        # 6.6 返回总奖励
-        return reward
 
+        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+
+        # === 日志记录 ===
+        for key, value in rewards.items():
+            self._episode_sums[key] = self._episode_sums.get(key, torch.zeros_like(value)) + value
+            self.writer.add_scalar(f"Reward/{key}", value.mean().item(), self.global_step)
+
+        self.writer.add_scalar("Reward/Total", reward.mean().item(), self.global_step)
+
+        return reward
     # 7. 判断回合结束
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # 7.1 判断是否达到最大回合步数
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         reached_target = torch.zeros_like(time_out, dtype=torch.bool)
         if self.dist_to_target is not None:
-            # 7.2 判断是否到达目标位置
-            reached_target = self.dist_to_target < 0.1
+            reached_target = self.dist_to_target < 0.2
             self._current_wp_idx[reached_target] += 1
         finished_traj = self._current_wp_idx >= self._trajectories.shape[1]
         self.count += sum(finished_traj)
@@ -359,7 +373,7 @@ class MydogMarlEnv(DirectRLEnv):
 
         self.debug_draw.draw_lines_spline(points, carb.ColorRgba(*color, 1.0), thickness, False)
 
-    def generate_random_walk_trajectory(self,start_pos, num_points=15, step_size=0.5, seed=42, num_interp=10):
+    def generate_random_walk_trajectory(self,start_pos, num_points=2, step_size=1.0, seed=42, num_interp=1):
         torch.manual_seed(seed)
         traj = [start_pos]
         for _ in range(num_points - 1):
@@ -392,6 +406,7 @@ class MydogMarlEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
 
         # 8.4 重置动作缓冲
+        time.sleep(1)
         default_root_state = self._robot.data.default_root_state[env_ids]
         self._prev_dist_to_target[env_ids] = 0.0
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
@@ -400,13 +415,13 @@ class MydogMarlEnv(DirectRLEnv):
         if self.debug_draw:
             self.debug_draw.clear_lines()
         num_points = self.cfg.num_waypoints
-
         for i, env_id in enumerate(env_ids):
-            start = self._robot.data.default_root_state[env_id, :2]
+            start = self._robot.data.root_state_w[env_id, :2]
 
             # 随机生成终点
+            self._target_positions = torch.rand((self.num_envs, 2), device=self.device) * 4.0 - 2.0 
             traj = self.generate_random_walk_trajectory(start, num_points=num_points, num_interp=self.cfg.num_interp,
-                                                         step_size=self.cfg.step_size, seed=self.seed)
+                                                         step_size=self.cfg.step_size, seed=random.randint(1, 100))
 
             self._trajectories[env_id] = traj
             self._current_wp_idx[env_id] = 0
