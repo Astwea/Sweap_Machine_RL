@@ -284,43 +284,71 @@ class MydogMarlEnv(DirectRLEnv):
             traj_delta_feats,                         # 轨迹趋势 (2×3)
             cos_yaw, sin_yaw                          # 姿态信息 (2,)
         ], dim=-1)
+        if torch.isnan(obs).any():
+            print("NaN found in obs_buf, replacing with zeros")
+            obs = torch.where(torch.isnan(obs), torch.zeros_like(obs), obs)
+
+        if torch.isinf(obs).any():
+            print("Inf found in obs_buf, replacing with zeros")
+            obs = torch.where(torch.isinf(obs), torch.zeros_like(obs), obs)
 
         return {"policy": obs}
 
     # 6. 计算奖励
     def _get_rewards(self) -> torch.Tensor:
         self.global_step += 1
-        # === 轨迹误差 ===
-        id = torch.clamp(self._current_wp_idx, max=self._trajectories.shape[1] - 1)
+
+        # === 当前轨迹段 ===
+        id = torch.clamp(self._current_wp_idx, max=self._trajectories.shape[1] - 2)
         current_target = self._trajectories[torch.arange(self.num_envs), id]
-        idx_next = torch.clamp(self._current_wp_idx + 1, max=self._trajectories.shape[1] - 1)
-        next_target = self._trajectories[torch.arange(self.num_envs), idx_next]
+        next_target = self._trajectories[torch.arange(self.num_envs), id + 1]
         
-        tracking_error = torch.norm(self.positions - current_target, dim=1)
-        self.dist_to_target = tracking_error
-        tracking_reward = torch.exp(-tracking_error / 1.5)  # 更稳定，更平滑
+        # === 向量定义 ===
+        pos = self.positions
+        vel = self._robot.data.root_lin_vel_b[:, :2]
+        ab = next_target - current_target
+        ap = pos - current_target
 
+        ab_norm = torch.norm(ab, dim=1, keepdim=True) + 1e-6
+        ab_unit = ab / ab_norm
 
-        # === 到达终点奖励 ===
-        done_mask = (self._current_wp_idx >= self._trajectories.shape[1]) & (tracking_error < 0.2)
-        bias = torch.zeros_like(tracking_reward)
-        bias[tracking_error < 0.2] = 1.0  # 每个点都能触发，不止终点
-        bias[done_mask] = 5.0 # 终点 bonus
+        # === 投影点（路径上的最近点） ===
+        t = torch.clamp(torch.sum(ap * ab, dim=1) / (torch.sum(ab * ab, dim=1) + 1e-6), 0.0, 1.0).unsqueeze(1)
+        proj = current_target + t * ab
+
+        # === 距离误差 ===
+        lateral_error = torch.norm(pos - proj, dim=1)
+        self.dist_to_target = lateral_error  # 用于 bias 计算
+
+        # === 路径推进奖励（路径切向速度） ===
+        v_forward = torch.sum(vel * ab_unit, dim=1)
+        progress_reward = v_forward  # 可加 tanh(v_forward) 平滑处理
+
+        # === 到达奖励 ===
+        done_mask = (self._current_wp_idx >= self._trajectories.shape[1] - 1) & (lateral_error < 0.2)
+        bias = torch.zeros_like(lateral_error)
+        bias[lateral_error < 0.2] = 1.0
+        bias[done_mask] = 5.0  # 终点 bonus
 
         # === 朝向奖励 ===
         forward_vector = self.quaternion_to_forward_vector(self.yaw)[:, :2]
-        direction = current_target - self.positions
-        traj_tangent = next_target - current_target
-        traj_tangent = traj_tangent / (torch.norm(traj_tangent, dim=1, keepdim=True) + 1e-6)
-        traj_alignment = torch.sum(forward_vector * traj_tangent, dim=1)
+        direction_to_target = current_target - pos
 
-        traj_dir_reward = ((traj_alignment + 1) / 2.0)
-        cos_theta = torch.sum(forward_vector * direction, dim=1) / (
-            torch.norm(forward_vector, dim=1) * torch.norm(direction, dim=1) + 1e-6
+        dot_product = torch.sum(forward_vector * direction_to_target, dim=1)
+        direction_norm = torch.norm(forward_vector, dim=1) * torch.norm(direction_to_target, dim=1)
+        cos_theta = dot_product / (direction_norm + 1e-6)
+
+        # 分段方向奖励：±30° 以内得分，否则惩罚
+        cos_thresh = 0.866  # cos(30°)
+        direction_reward = torch.where(
+            cos_theta >= cos_thresh,
+            (cos_theta - cos_thresh) / (1.0 - cos_thresh),
+            (cos_theta - cos_thresh) / (cos_thresh + 1.0)
         )
-        direction_reward = ((cos_theta + 1.0) / 2.0) # 映射到 [0,2]
+        traj_alignment = torch.sum(forward_vector * ab_unit, dim=1)  # 对齐轨迹方向
+        traj_dir_reward = ((traj_alignment + 1.0) / 2.0)
 
-        # === 动作惩罚项 ===
+        # === 动作惩罚 ===
         action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
         action_magnitude = torch.norm(self._actions, dim=1)
         action_rate_penalty = -action_rate
@@ -328,7 +356,8 @@ class MydogMarlEnv(DirectRLEnv):
 
         # === 合并奖励 ===
         rewards = {
-            "tracking_reward": tracking_reward * self.cfg.traj_track_scale * self.step_dt,
+            "progress_reward": progress_reward * self.cfg.traj_track_scale * self.step_dt,
+            "lateral_penalty": -lateral_error * self.cfg.lateral_error_scale * self.step_dt,  # 添加 config 项
             "direction_reward": direction_reward * self.cfg.direction_scale * self.step_dt + traj_dir_reward * self.cfg.direction_scale * self.step_dt,
             "goal_bias": bias * self.cfg.traj_done_bonus,
             "action_rate_penalty": action_rate_penalty * self.cfg.action_rate_reward_scale * self.step_dt,

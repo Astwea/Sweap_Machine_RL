@@ -37,8 +37,8 @@ params:
         # 4.3.2 标准差初始化
         sigma_init:
           name: const_initializer  # 使用常数初始化方法
-          val: 0  # 初始化值设为0
-
+          val: 0.2  # 初始化值设为0
+        std_activation: softplus
         fixed_sigma: True  # 是否使用固定的标准差
 
       # 4.4 MLP 网络参数
@@ -57,7 +57,7 @@ params:
 
   # 5. 检查点加载配置
   load_checkpoint: False # 是否从检查点加载模型
-  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-03_12-58-53/nn/diff_drive_direct.pth'  # 检查点路径
+  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-07_00-29-45/nn/diff_drive_direct.pth'  # 检查点路径
 
   # 6. 训练配置
   config:
@@ -84,7 +84,7 @@ params:
     normalize_advantage: True  # 归一化优势函数
     gamma: 0.99  # 折扣因子
     tau: 0.95  # GAE（广义优势估计）衰减因子
-    learning_rate: 1e-4  # 学习率
+    learning_rate: 5e-5  # 学习率
     lr_schedule: adaptive  # 自适应学习率调度
     schedule_type: legacy  # 学习率调度类型
     kl_threshold: 0.01  # KL 散度阈值
@@ -93,7 +93,7 @@ params:
     save_best_after: 200  # 在指定轮次后保存最佳模型
     save_frequency: 100  # 每隔多少轮保存模型
     grad_norm: 1.0  # 梯度裁剪阈值
-    entropy_coef: 0.007  # 熵奖励系数（鼓励探索）
+    entropy_coef: 0.01  # 熵奖励系数（鼓励探索）
     truncate_grads: True  # 是否裁剪梯度
 
     # 6.5 PPO 参数
@@ -101,10 +101,10 @@ params:
     horizon_length: 64  # PPO 轨迹长度
     minibatch_size: 32768  # 最小批量大小
     mini_epochs: 5  # 每个批量的训练轮次
-    critic_coef: 2.0  # 价值函数损失系数
+    critic_coef: 1.0  # 价值函数损失系数
     clip_value: True  # 是否裁剪价值函数输出
 
     # 6.6 序列和边界损失
     seq_length: 4  # RNN 序列长度
-    bounds_loss_coef: 0.0  # 边界损失系数（如果需要约束动作范围）
+    bounds_loss_coef: 0.01  # 边界损失系数（如果需要约束动作范围）
 
