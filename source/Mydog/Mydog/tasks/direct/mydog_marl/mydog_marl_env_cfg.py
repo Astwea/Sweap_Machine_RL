@@ -72,9 +72,9 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     step_size = 1.5  # 步长
     # 5. 奖励缩放系数
     # - 用于平衡不同奖励项的相对重要性
-    traj_track_scale = 50.0  # 已经内嵌在 reward 中了，可以移除
+    traj_track_scale = 100.0  # 已经内嵌在 reward 中了，可以移除
     traj_done_bonus = 1.0 # 写在 reward 里
     action_magnitude_scale = 0.05
     action_rate_reward_scale = 0.01
     direction_scale = 30.0
-    lateral_error_scale = 1.0 # 侧向误差缩放系数
+    lateral_error_scale = 10.0 # 侧向误差缩放系数

@@ -231,7 +231,7 @@ class MydogMarlEnv(DirectRLEnv):
         self.arrow_visual.visualize(translations=positions, orientations=self.yaw, marker_indices=torch.zeros(self.num_envs, dtype=torch.int64))
         self.target_arrow_visual.visualize(translations=positions, orientations=self.target_orientations, marker_indices=torch.zeros(self.num_envs, dtype=torch.int64))
 
-        self.last_pos = self.positions
+
 
     # 5. 获取观测数据
     def _get_observations(self) -> dict:
@@ -291,7 +291,6 @@ class MydogMarlEnv(DirectRLEnv):
         if torch.isinf(obs).any():
             print("Inf found in obs_buf, replacing with zeros")
             obs = torch.where(torch.isinf(obs), torch.zeros_like(obs), obs)
-
         return {"policy": obs}
 
     # 6. 计算奖励
@@ -305,10 +304,9 @@ class MydogMarlEnv(DirectRLEnv):
         
         # === 向量定义 ===
         pos = self.positions
-        vel = self._robot.data.root_lin_vel_b[:, :2]
+        vel = self._robot.data.root_lin_vel_w[:, :2]
         ab = next_target - current_target
         ap = pos - current_target
-
         ab_norm = torch.norm(ab, dim=1, keepdim=True) + 1e-6
         ab_unit = ab / ab_norm
 
@@ -318,17 +316,20 @@ class MydogMarlEnv(DirectRLEnv):
 
         # === 距离误差 ===
         lateral_error = torch.norm(pos - proj, dim=1)
-        self.dist_to_target = lateral_error  # 用于 bias 计算
+
+        dist_to_target = torch.norm(ap, dim=1)
+        self.dist_to_target = dist_to_target  # 用于 bias 计算
 
         # === 路径推进奖励（路径切向速度） ===
         v_forward = torch.sum(vel * ab_unit, dim=1)
-        progress_reward = v_forward  # 可加 tanh(v_forward) 平滑处理
+        progress_reward = -torch.tanh(v_forward)  # 可加 tanh(v_forward) 平滑处理
 
         # === 到达奖励 ===
-        done_mask = (self._current_wp_idx >= self._trajectories.shape[1] - 1) & (lateral_error < 0.2)
-        bias = torch.zeros_like(lateral_error)
-        bias[lateral_error < 0.2] = 1.0
-        bias[done_mask] = 5.0  # 终点 bonus
+        done_mask = (self._current_wp_idx >= self._trajectories.shape[1] - 1) & (dist_to_target < 0.2)
+        bias = torch.zeros_like(dist_to_target)
+        mask = (dist_to_target >= 0.2) & (dist_to_target < 0.5)
+        bias[mask] = torch.exp(- (dist_to_target[mask] - 0.2) / 0.05)
+        bias[done_mask] = 0.5  # 终点 bonus
 
         # === 朝向奖励 ===
         forward_vector = self.quaternion_to_forward_vector(self.yaw)[:, :2]
@@ -384,6 +385,7 @@ class MydogMarlEnv(DirectRLEnv):
             self._current_wp_idx[reached_target] += 1
         finished_traj = self._current_wp_idx >= self._trajectories.shape[1]
         self.count += sum(finished_traj)
+        self.last_pos = self.positions
         return finished_traj, time_out
 
     # 8. 环境重置
