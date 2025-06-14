@@ -172,10 +172,10 @@ class MydogMarlEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         # 3.1 缓存当前动作
         # - 记录输入的动作，以便后续使用
-        # action = self.keyboard.advance()
-        # vx, wz = action[0], action[1]
-        # self._actions = torch.tensor(np.tile([vx, wz], (self.num_envs, 1)), dtype=torch.float32, device=self.device)
-        self._actions = actions.clone().clamp(-1.0, 1.0)
+        action = self.keyboard.advance()
+        vx, wz = action[0], action[1]
+        self._actions = torch.tensor(np.tile([vx, wz], (self.num_envs, 1)), dtype=torch.float32, device=self.device)
+        # self._actions = actions.clone().clamp(-1.0, 1.0)
 
     def adjust_yaw_with_velocity_tensor(self, quat, vx):
         # 提取四元数分量
@@ -236,7 +236,6 @@ class MydogMarlEnv(DirectRLEnv):
     # 5. 获取观测数据
     def _get_observations(self) -> dict:
         self._previous_actions = self._actions.clone()
-
         future_len = 4  # 当前点 + 未来3个轨迹点
         traj_points = []
         traj_deltas = []
@@ -322,7 +321,7 @@ class MydogMarlEnv(DirectRLEnv):
 
         # === 路径推进奖励（路径切向速度） ===
         v_forward = torch.sum(vel * ab_unit, dim=1)
-        progress_reward = -torch.tanh(v_forward)  # 可加 tanh(v_forward) 平滑处理
+        progress_reward = torch.tanh(v_forward)  # 可加 tanh(v_forward) 平滑处理
 
         # === 到达奖励 ===
         done_mask = (self._current_wp_idx >= self._trajectories.shape[1] - 1) & (dist_to_target < 0.2)
@@ -354,7 +353,7 @@ class MydogMarlEnv(DirectRLEnv):
         action_magnitude = torch.norm(self._actions, dim=1)
         action_rate_penalty = -action_rate
         action_mag_penalty = -action_magnitude
-
+        print(-lateral_error * self.cfg.lateral_error_scale, progress_reward * self.cfg.traj_track_scale)
         # === 合并奖励 ===
         rewards = {
             "progress_reward": progress_reward * self.cfg.traj_track_scale * self.step_dt,
@@ -366,7 +365,6 @@ class MydogMarlEnv(DirectRLEnv):
         }
 
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-
         # === 日志记录 ===
         for key, value in rewards.items():
             self._episode_sums[key] = self._episode_sums.get(key, torch.zeros_like(value)) + value
@@ -437,7 +435,6 @@ class MydogMarlEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
 
         # 8.4 重置动作缓冲
-        time.sleep(1)
         default_root_state = self._robot.data.default_root_state[env_ids]
         self._prev_dist_to_target[env_ids] = 0.0
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
@@ -450,7 +447,6 @@ class MydogMarlEnv(DirectRLEnv):
             start = self._robot.data.root_state_w[env_id, :2]
 
             # 随机生成终点
-            self._target_positions = torch.rand((self.num_envs, 2), device=self.device) * 4.0 - 2.0 
             traj = self.generate_random_walk_trajectory(start, num_points=num_points, num_interp=self.cfg.num_interp,
                                                          step_size=self.cfg.step_size, seed=random.randint(1, 100))
 

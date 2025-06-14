@@ -1,7 +1,7 @@
 params:
   # 1. 通用参数
   # 1.1 随机种子设置
-  seed: 51 # 确保实验的可重复性
+  seed: 38 # 确保实验的可重复性
 
   # 2. 环境参数
   env:
@@ -37,8 +37,8 @@ params:
         # 4.3.2 标准差初始化
         sigma_init:
           name: const_initializer  # 使用常数初始化方法
-          val: 0.2  # 初始化值设为0
-        fixed_sigma: True  # 是否使用固定的标准差
+          val: 0  # 初始化值设为0
+        fixed_sigma: Fasle  # 是否使用固定的标准差
 
       # 4.4 MLP 网络参数
     mlp:
@@ -56,7 +56,7 @@ params:
 
   # 5. 检查点加载配置
   load_checkpoint: True # 是否从检查点加载模型
-  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-10_12-49-49/nn/diff_drive_direct.pth'  # 检查点路径
+  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-12_23-49-32/nn/last_diff_drive_direct_ep_2300_rew_11.154987.pth'  # 检查点路径
 
   # 6. 训练配置
   config:
@@ -89,8 +89,8 @@ params:
     kl_threshold: 0.01  # KL 散度阈值
     score_to_win: 20000  # 期望的最高分数（训练目标）
     max_epochs: 150000000  # 最大训练轮数
-    save_best_after: 200  # 在指定轮次后保存最佳模型
-    save_frequency: 100  # 每隔多少轮保存模型
+    save_best_after: 100  # 在指定轮次后保存最佳模型
+    save_frequency: 50  # 每隔多少轮保存模型
     grad_norm: 1.0  # 梯度裁剪阈值
     entropy_coef: 0.001  # 熵奖励系数（鼓励探索）
     truncate_grads: True  # 是否裁剪梯度
