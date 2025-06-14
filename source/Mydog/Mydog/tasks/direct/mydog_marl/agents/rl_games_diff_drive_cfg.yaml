@@ -55,7 +55,7 @@ params:
         name: None  # 不使用正则化
 
   # 5. 检查点加载配置
-  load_checkpoint: True # 是否从检查点加载模型
+  load_checkpoint: False # 是否从检查点加载模型
   load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-12_23-49-32/nn/last_diff_drive_direct_ep_2300_rew_11.154987.pth'  # 检查点路径
 
   # 6. 训练配置

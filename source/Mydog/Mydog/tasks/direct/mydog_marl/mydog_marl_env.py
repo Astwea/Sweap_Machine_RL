@@ -141,7 +141,7 @@ class MydogMarlEnv(DirectRLEnv):
 
     def quaternion_to_forward_vector(self, quaternions):
         # 提取四元数 (qx, qy, qz, qw)
-        qx, qy, qz, qw = quaternions[:, 0], quaternions[:, 1], quaternions[:, 2], quaternions[:, 3]
+        qw, qx, qy, qz = quaternions[:, 0], quaternions[:, 1], quaternions[:, 2], quaternions[:, 3]
 
         # 计算正前方方向向量
         forward_x = 2 * (qx * qz + qw * qy)
@@ -331,39 +331,29 @@ class MydogMarlEnv(DirectRLEnv):
         bias[done_mask] = 0.5  # 终点 bonus
 
         # === 朝向奖励 ===
-        forward_vector = self.quaternion_to_forward_vector(self.yaw)[:, :2]
-        direction_to_target = current_target - pos
-
-        dot_product = torch.sum(forward_vector * direction_to_target, dim=1)
-        direction_norm = torch.norm(forward_vector, dim=1) * torch.norm(direction_to_target, dim=1)
-        cos_theta = dot_product / (direction_norm + 1e-6)
-
-        # 分段方向奖励：±30° 以内得分，否则惩罚
-        cos_thresh = 0.866  # cos(30°)
-        direction_reward = torch.where(
-            cos_theta >= cos_thresh,
-            (cos_theta - cos_thresh) / (1.0 - cos_thresh),
-            (cos_theta - cos_thresh) / (cos_thresh + 1.0)
-        )
-        traj_alignment = torch.sum(forward_vector * ab_unit, dim=1)  # 对齐轨迹方向
-        traj_dir_reward = ((traj_alignment + 1.0) / 2.0)
+        forward_vector = self.quaternion_to_yaw(self.yaw)
+        next_heading = torch.atan2(ap[:, 1], ap[:, 0])
+        target_heading = torch.atan2(ab_unit[:, 1], ab_unit[:, 0])
+        heading_error =  target_heading-forward_vector
+        heading_error = (heading_error + torch.pi) % (2 * torch.pi) - torch.pi
+        direction_reward = torch.exp(- (heading_error ** 2) / (2 * (0.3 ** 2)))  # 高斯形式
+        
 
         # === 动作惩罚 ===
         action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
         action_magnitude = torch.norm(self._actions, dim=1)
         action_rate_penalty = -action_rate
         action_mag_penalty = -action_magnitude
-        print(-lateral_error * self.cfg.lateral_error_scale, progress_reward * self.cfg.traj_track_scale)
         # === 合并奖励 ===
         rewards = {
             "progress_reward": progress_reward * self.cfg.traj_track_scale * self.step_dt,
             "lateral_penalty": -lateral_error * self.cfg.lateral_error_scale * self.step_dt,  # 添加 config 项
-            "direction_reward": direction_reward * self.cfg.direction_scale * self.step_dt + traj_dir_reward * self.cfg.direction_scale * self.step_dt,
+            "direction_reward": direction_reward * self.cfg.direction_scale * self.step_dt,
             "goal_bias": bias * self.cfg.traj_done_bonus,
             "action_rate_penalty": action_rate_penalty * self.cfg.action_rate_reward_scale * self.step_dt,
             "action_mag_penalty": action_mag_penalty * self.cfg.action_magnitude_scale * self.step_dt,
         }
-
+        print(rewards)
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # === 日志记录 ===
         for key, value in rewards.items():

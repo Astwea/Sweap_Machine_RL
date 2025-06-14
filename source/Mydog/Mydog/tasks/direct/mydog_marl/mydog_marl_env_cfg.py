@@ -77,4 +77,4 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     action_magnitude_scale = 0.05
     action_rate_reward_scale = 0.01
     direction_scale = 30.0
-    lateral_error_scale = 2.0 # 侧向误差缩放系数
+    lateral_error_scale = 10.0 # 侧向误差缩放系数
