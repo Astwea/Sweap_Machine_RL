@@ -29,6 +29,8 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline
 import numpy as np
 import random
+from .mpc_controller import DifferentialDriveMPC
+from concurrent.futures import ThreadPoolExecutor
 
 def define_markers(path, idx) -> VisualizationMarkers:
     """Define markers with various different shapes."""
@@ -62,6 +64,19 @@ def define_markers(path, idx) -> VisualizationMarkers:
     )
     return VisualizationMarkers(marker_cfg)
 
+def mpc_worker(args):
+    pos, yaw, start_idx, traj_np, horizon, step_dt = args
+    mpc = DifferentialDriveMPC(horizon=horizon, dt=step_dt)
+    sub_traj = traj_np[start_idx:start_idx + horizon + 1]
+    if len(sub_traj) < horizon + 1:
+        pad = np.tile(sub_traj[-1], (horizon + 1 - len(sub_traj), 1))
+        sub_traj = np.concatenate([sub_traj, pad], axis=0)
+    try:
+        v, w = mpc.solve((pos[0], pos[1], yaw), sub_traj)
+    except:
+        v, w = 0.0, 0.0
+    return [v, w]
+
 class MydogMarlEnv(DirectRLEnv):
     # 1. 配置初始化
     cfg: MydogMarlEnvCfg
@@ -73,6 +88,7 @@ class MydogMarlEnv(DirectRLEnv):
         # 1.2 初始化动作存储
         # - 记录当前和前一次的动作，用于计算奖励和动态控制
         self._actions = torch.zeros(self.num_envs, 2, device=self.device)  # (线速度, 角速度)
+        self.teacher_actions = torch.zeros(self.num_envs, 2, device=self.device)  # (线速度, 角速度)
         self._previous_actions = torch.zeros(self.num_envs, 2, device=self.device)
 
 
@@ -85,7 +101,8 @@ class MydogMarlEnv(DirectRLEnv):
         self._prev_wp_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.seed = 10
         self.epoch = 0
-
+        self.turn_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.headerror = torch.zeros(self.num_envs, device=self.device)
         self.dist_to_target = None
         self._prev_dist_to_target = torch.zeros(self.num_envs, device=self.device)
         self.target_orientations = None
@@ -100,11 +117,13 @@ class MydogMarlEnv(DirectRLEnv):
         self.global_step = 0
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device) 
-            for key in ["tracking_reward","direction_reward","goal_bias","action_rate_penalty","action_mag_penalty"]
+            for key in ["tracking_reward","direction_reward","goal_bias","action_rate_penalty","action_mag_penalty","imitation_reward"]
         }
         self.joint_idx, _ = self._robot.find_joints(['left_wheel_joint', 'right_wheel_joint'])
         self.positions = self._robot.data.root_state_w[:, :2]
         self.yaw  = self._robot.data.root_state_w[:, 3:7]
+        self.mpc = [DifferentialDriveMPC(horizon=10, dt=self.step_dt) for _ in range(self.num_envs)]
+
         if debug_draw_available:
             self.debug_draw = debug_draw.acquire_debug_draw_interface()
             self.keyboard = Se2Keyboard(v_y_sensitivity=0.8)
@@ -168,14 +187,50 @@ class MydogMarlEnv(DirectRLEnv):
         qz = torch.sin(yaw_target / 2)
         qw = torch.cos(yaw_target / 2)
         return torch.stack([qw, qx, qy, qz], dim=1)
+    
 
+    def get_teacher_action(self):
+        poses = self._robot.data.root_state_w[:, :2].cpu().numpy()
+        yaws = self.quaternion_to_yaw(self._robot.data.root_state_w[:, 3:7]).cpu().numpy()
+        idxs = self._current_wp_idx.cpu().numpy()
+        trajs = self._trajectories.detach().cpu().numpy()
+        horizon = 10
+
+        # 把 step_dt 加到每个args
+        args_list = [
+            (poses[i], yaws[i], idxs[i], trajs[i], horizon, self.step_dt)
+            for i in range(self.num_envs)
+        ]
+        with ThreadPoolExecutor() as executor:
+            actions = list(executor.map(mpc_worker, args_list))
+
+        return torch.tensor(actions, dtype=torch.float32, device=self.device)
+    
     def _pre_physics_step(self, actions: torch.Tensor):
         # 3.1 缓存当前动作
         # - 记录输入的动作，以便后续使用
-        action = self.keyboard.advance()
-        vx, wz = action[0], action[1]
-        self._actions = torch.tensor(np.tile([vx, wz], (self.num_envs, 1)), dtype=torch.float32, device=self.device)
-        # self._actions = actions.clone().clamp(-1.0, 1.0)
+        # action = self.keyboard.advance()
+        # vx, wz = action[0], action[1]
+        # self._actions = torch.tensor(np.tile([vx, wz], (self.num_envs, 1)), dtype=torch.float32, device=self.device)
+        # v, w = self.mpc.solve(
+        #     init_state=(x, y, yaw),
+        #     ref_traj=your_traj_np_array  # 轨迹为 np.array([[x0, y0], [x1, y1], ..., [xN, yN]])
+        # )
+        self.teacher_actions = self.get_teacher_action()   # [N,2] tensor
+        v = self.teacher_actions[:, 0].clone()
+        w = self.teacher_actions[:, 1].clone()
+
+        threshold = 2.50
+        self.turn_mask = self.headerror.abs() < threshold   # [N] bool tensor
+
+        max_w = 1.0  # 最大角速度
+        v[self.turn_mask] = 0.0
+        w[self.turn_mask] = max_w * self.headerror[self.turn_mask].sign()
+
+        self.teacher_actions = torch.stack([v, w], dim=1)
+        vm = actions[:, 0].clone().clamp(-1.0, 1.0)
+        wm = actions[:, 1].clone().clamp(-2.0, 2.0)
+        self._actions = torch.stack([vm, wm], dim=1)
 
     def adjust_yaw_with_velocity_tensor(self, quat, vx):
         # 提取四元数分量
@@ -227,7 +282,6 @@ class MydogMarlEnv(DirectRLEnv):
         self.cos_phi = torch.cos(angle_diff).unsqueeze(1)
         self.sin_phi = torch.sin(angle_diff).unsqueeze(1)
         linear_vel = self._robot.data.root_lin_vel_b[:, 0]
-        self.yaw = self.adjust_yaw_with_velocity_tensor(self.yaw, linear_vel)
         self.arrow_visual.visualize(translations=positions, orientations=self.yaw, marker_indices=torch.zeros(self.num_envs, dtype=torch.int64))
         self.target_arrow_visual.visualize(translations=positions, orientations=self.target_orientations, marker_indices=torch.zeros(self.num_envs, dtype=torch.int64))
 
@@ -332,10 +386,11 @@ class MydogMarlEnv(DirectRLEnv):
 
         # === 朝向奖励 ===
         forward_vector = self.quaternion_to_yaw(self.yaw)
-        next_heading = torch.atan2(ap[:, 1], ap[:, 0])
-        target_heading = torch.atan2(ab_unit[:, 1], ab_unit[:, 0])
-        heading_error =  target_heading-forward_vector
-        heading_error = (heading_error + torch.pi) % (2 * torch.pi) - torch.pi
+        target_heading = torch.atan2(ap[:, 1], ap[:, 0])
+        next_heading = torch.atan2(ab[:, 1], ab[:, 0])
+        heading_error =  forward_vector - target_heading
+        self.headerror = heading_error
+
         direction_reward = torch.exp(- (heading_error ** 2) / (2 * (0.3 ** 2)))  # 高斯形式
         
 
@@ -344,6 +399,10 @@ class MydogMarlEnv(DirectRLEnv):
         action_magnitude = torch.norm(self._actions, dim=1)
         action_rate_penalty = -action_rate
         action_mag_penalty = -action_magnitude
+
+        # === 教师奖励 ===
+        imitate_loss = torch.sum((self._actions - self.teacher_actions) ** 2, dim=1)
+        imitate_reward = -imitate_loss
         # === 合并奖励 ===
         rewards = {
             "progress_reward": progress_reward * self.cfg.traj_track_scale * self.step_dt,
@@ -352,8 +411,8 @@ class MydogMarlEnv(DirectRLEnv):
             "goal_bias": bias * self.cfg.traj_done_bonus,
             "action_rate_penalty": action_rate_penalty * self.cfg.action_rate_reward_scale * self.step_dt,
             "action_mag_penalty": action_mag_penalty * self.cfg.action_magnitude_scale * self.step_dt,
+            "imitation_reward": imitate_reward * self.cfg.imitation_scale * self.step_dt
         }
-        print(rewards)
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # === 日志记录 ===
         for key, value in rewards.items():

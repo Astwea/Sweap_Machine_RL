@@ -58,7 +58,7 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     )
     # 3. 场景配置
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=8192,  # 场景中的环境数量
+        num_envs=16,  # 场景中的环境数量
         env_spacing=4.0,  # 每个环境的空间间隔（米）
         replicate_physics=True  # 是否复制物理属性
     )
@@ -68,7 +68,7 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     robot: ArticulationCfg = SAODI_CONFIG.replace(prim_path="/World/envs/env_.*/Robot")
     log_dir = "runs/logs"  # 日志目录
     num_waypoints = 3 # 路径点数量
-    num_interp = 2 # 插值数量
+    num_interp = 8 # 插值数量
     step_size = 1.5  # 步长
     # 5. 奖励缩放系数
     # - 用于平衡不同奖励项的相对重要性
@@ -78,3 +78,4 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     action_rate_reward_scale = 0.01
     direction_scale = 30.0
     lateral_error_scale = 10.0 # 侧向误差缩放系数
+    imitation_scale = 100.0  # 模仿奖励缩放系数

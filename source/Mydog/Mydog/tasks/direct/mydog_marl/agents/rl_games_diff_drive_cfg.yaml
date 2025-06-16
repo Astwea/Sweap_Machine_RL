@@ -98,7 +98,7 @@ params:
     # 6.5 PPO 参数
     e_clip: 0.2  # PPO 剪辑范围
     horizon_length: 64  # PPO 轨迹长度
-    minibatch_size: 32768  # 最小批量大小
+    minibatch_size: 1024  # 最小批量大小
     mini_epochs: 5  # 每个批量的训练轮次
     critic_coef: 1.0  # 价值函数损失系数
     clip_value: True  # 是否裁剪价值函数输出
@@ -106,4 +106,3 @@ params:
     # 6.6 序列和边界损失
     seq_length: 4  # RNN 序列长度
     bounds_loss_coef: 0.01  # 边界损失系数（如果需要约束动作范围）
-
