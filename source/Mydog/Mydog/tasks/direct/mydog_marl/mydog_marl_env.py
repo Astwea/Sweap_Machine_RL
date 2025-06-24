@@ -131,6 +131,7 @@ class MydogMarlEnv(DirectRLEnv):
             self.debug_draw = None
             self.keyboard = None
         self.count = 0
+        self.finished_mask = None
         
     # 2. 场景设置
     def _setup_scene(self):
@@ -216,18 +217,8 @@ class MydogMarlEnv(DirectRLEnv):
         #     init_state=(x, y, yaw),
         #     ref_traj=your_traj_np_array  # 轨迹为 np.array([[x0, y0], [x1, y1], ..., [xN, yN]])
         # )
-        self.teacher_actions = self.get_teacher_action()   # [N,2] tensor
-        v = self.teacher_actions[:, 0].clone()
-        w = self.teacher_actions[:, 1].clone()
-
-        threshold = 2.50
-        self.turn_mask = self.headerror.abs() < threshold   # [N] bool tensor
-
-        max_w = 1.0  # 最大角速度
-        v[self.turn_mask] = 0.0
-        w[self.turn_mask] = max_w * self.headerror[self.turn_mask].sign()
-
-        self.teacher_actions = torch.stack([v, w], dim=1)
+        #self.teacher_actions = self.get_teacher_action()   # [N,2] tensor
+        #
         vm = actions[:, 0].clone().clamp(-1.0, 1.0)
         wm = actions[:, 1].clone().clamp(-2.0, 2.0)
         self._actions = torch.stack([vm, wm], dim=1)
@@ -374,34 +365,37 @@ class MydogMarlEnv(DirectRLEnv):
         self.dist_to_target = dist_to_target  # 用于 bias 计算
 
         # === 路径推进奖励（路径切向速度） ===
+        forward_vector = self.quaternion_to_yaw(self.yaw)
+        heading = torch.stack([torch.cos(forward_vector), torch.sin(forward_vector)], dim=1)  # shape: [N, 2]
         v_forward = torch.sum(vel * ab_unit, dim=1)
-        progress_reward = torch.tanh(v_forward)  # 可加 tanh(v_forward) 平滑处理
+        alignment = torch.sum(heading * ab_unit, dim=1)  # cos(heading_angle - path_angle)
+        progress_reward = torch.tanh(v_forward * alignment)  # 可加 tanh(v_forward) 平滑处理
 
         # === 到达奖励 ===
         done_mask = (self._current_wp_idx >= self._trajectories.shape[1] - 1) & (dist_to_target < 0.2)
         bias = torch.zeros_like(dist_to_target)
         mask = (dist_to_target >= 0.2) & (dist_to_target < 0.5)
-        bias[mask] = torch.exp(- (dist_to_target[mask] - 0.2) / 0.05)
-        bias[done_mask] = 0.5  # 终点 bonus
+        bias[mask] = 0.0
+        bias[done_mask] = 0.0  # 终点 bonus
 
         # === 朝向奖励 ===
-        forward_vector = self.quaternion_to_yaw(self.yaw)
+
         target_heading = torch.atan2(ap[:, 1], ap[:, 0])
         next_heading = torch.atan2(ab[:, 1], ab[:, 0])
         heading_error =  forward_vector - target_heading
         self.headerror = heading_error
 
-        direction_reward = torch.exp(- (heading_error ** 2) / (2 * (0.3 ** 2)))  # 高斯形式
+        direction_reward = heading_error.abs() # 高斯形式
         
 
         # === 动作惩罚 ===
         action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
         action_magnitude = torch.norm(self._actions, dim=1)
-        action_rate_penalty = -action_rate
-        action_mag_penalty = -action_magnitude
+        action_rate_penalty = -torch.tanh(action_rate)
+        action_mag_penalty = -torch.tanh(action_magnitude)
 
         # === 教师奖励 ===
-        imitate_loss = torch.sum((self._actions - self.teacher_actions) ** 2, dim=1)
+        imitate_loss = torch.sum((self._actions - self._actions) ** 2, dim=1)
         imitate_reward = -imitate_loss
         # === 合并奖励 ===
         rewards = {
@@ -414,6 +408,7 @@ class MydogMarlEnv(DirectRLEnv):
             "imitation_reward": imitate_reward * self.cfg.imitation_scale * self.step_dt
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+        print(rewards)
         # === 日志记录 ===
         for key, value in rewards.items():
             self._episode_sums[key] = self._episode_sums.get(key, torch.zeros_like(value)) + value
@@ -431,6 +426,7 @@ class MydogMarlEnv(DirectRLEnv):
             reached_target = self.dist_to_target < 0.2
             self._current_wp_idx[reached_target] += 1
         finished_traj = self._current_wp_idx >= self._trajectories.shape[1]
+        self.finished_mask = finished_traj
         self.count += sum(finished_traj)
         self.last_pos = self.positions
         return finished_traj, time_out
@@ -477,7 +473,8 @@ class MydogMarlEnv(DirectRLEnv):
         # 8.1 获取需要重置的环境 ID
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
-
+        if self.finished_mask is None:
+            self.finished_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=env_ids.device)
         # 8.2 重置机器人状态
         self._robot.reset(env_ids)
         # 8.3 重置基础环境状态
@@ -496,10 +493,11 @@ class MydogMarlEnv(DirectRLEnv):
             start = self._robot.data.root_state_w[env_id, :2]
 
             # 随机生成终点
-            traj = self.generate_random_walk_trajectory(start, num_points=num_points, num_interp=self.cfg.num_interp,
+            traj = self._trajectories[env_id]
+            if self.finished_mask[env_id] or traj.abs().sum() == 0:
+                traj = self.generate_random_walk_trajectory(start, num_points=num_points, num_interp=self.cfg.num_interp,
                                                          step_size=self.cfg.step_size, seed=random.randint(1, 100))
-
-            self._trajectories[env_id] = traj
+                self._trajectories[env_id] = traj
             self._current_wp_idx[env_id] = 0
 
             # 可选可视化

@@ -58,7 +58,7 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     )
     # 3. 场景配置
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=16,  # 场景中的环境数量
+        num_envs=8192,  # 场景中的环境数量
         env_spacing=4.0,  # 每个环境的空间间隔（米）
         replicate_physics=True  # 是否复制物理属性
     )
@@ -72,10 +72,10 @@ class MydogMarlEnvCfg(DirectRLEnvCfg):
     step_size = 1.5  # 步长
     # 5. 奖励缩放系数
     # - 用于平衡不同奖励项的相对重要性
-    traj_track_scale = 100.0  # 已经内嵌在 reward 中了，可以移除
+    traj_track_scale = 12.5 # 已经内嵌在 reward 中了，可以移除
     traj_done_bonus = 1.0 # 写在 reward 里
     action_magnitude_scale = 0.05
     action_rate_reward_scale = 0.01
-    direction_scale = 30.0
-    lateral_error_scale = 10.0 # 侧向误差缩放系数
-    imitation_scale = 100.0  # 模仿奖励缩放系数
+    direction_scale = 3.0
+    lateral_error_scale = 20.0 # 侧向误差缩放系数
+    imitation_scale = 10.0  # 模仿奖励缩放系数

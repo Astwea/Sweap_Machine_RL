@@ -74,7 +74,7 @@ def main():
     """Play with RL-Games agent."""
     # parse env configuration
     env_cfg = parse_env_cfg(
-        args_cli.task, device=args_cli.device, num_envs=2, use_fabric=not args_cli.disable_fabric
+        args_cli.task, device=args_cli.device, num_envs=1, use_fabric=not args_cli.disable_fabric
     )
     agent_cfg = load_cfg_from_registry(args_cli.task, "rl_games_cfg_entry_point")
 

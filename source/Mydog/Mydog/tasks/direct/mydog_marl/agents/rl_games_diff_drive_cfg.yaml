@@ -1,7 +1,7 @@
 params:
   # 1. 通用参数
   # 1.1 随机种子设置
-  seed: 38 # 确保实验的可重复性
+  seed: 42 # 确保实验的可重复性
 
   # 2. 环境参数
   env:
@@ -37,8 +37,8 @@ params:
         # 4.3.2 标准差初始化
         sigma_init:
           name: const_initializer  # 使用常数初始化方法
-          val: 0  # 初始化值设为0
-        fixed_sigma: Fasle  # 是否使用固定的标准差
+          val: 0.5  # 初始化值设为0
+        fixed_sigma: False  # 是否使用固定的标准差
 
       # 4.4 MLP 网络参数
     mlp:
@@ -56,7 +56,7 @@ params:
 
   # 5. 检查点加载配置
   load_checkpoint: False # 是否从检查点加载模型
-  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-12_23-49-32/nn/last_diff_drive_direct_ep_2300_rew_11.154987.pth'  # 检查点路径
+  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-24_14-41-18/nn/last_diff_drive_direct_ep_2450_rew_-183.03473.pth'  # 检查点路径
 
   # 6. 训练配置
   config:
@@ -83,7 +83,7 @@ params:
     normalize_advantage: True  # 归一化优势函数
     gamma: 0.99  # 折扣因子
     tau: 0.95  # GAE（广义优势估计）衰减因子
-    learning_rate: 1e-5  # 学习率
+    learning_rate: 5e-5  # 学习率
     lr_schedule: adaptive  # 自适应学习率调度
     schedule_type: legacy  # 学习率调度类型
     kl_threshold: 0.01  # KL 散度阈值
@@ -92,13 +92,13 @@ params:
     save_best_after: 100  # 在指定轮次后保存最佳模型
     save_frequency: 50  # 每隔多少轮保存模型
     grad_norm: 1.0  # 梯度裁剪阈值
-    entropy_coef: 0.001  # 熵奖励系数（鼓励探索）
+    entropy_coef: 0.004  # 熵奖励系数（鼓励探索）
     truncate_grads: True  # 是否裁剪梯度
 
     # 6.5 PPO 参数
     e_clip: 0.2  # PPO 剪辑范围
     horizon_length: 64  # PPO 轨迹长度
-    minibatch_size: 1024  # 最小批量大小
+    minibatch_size: 32768  # 最小批量大小
     mini_epochs: 5  # 每个批量的训练轮次
     critic_coef: 1.0  # 价值函数损失系数
     clip_value: True  # 是否裁剪价值函数输出
