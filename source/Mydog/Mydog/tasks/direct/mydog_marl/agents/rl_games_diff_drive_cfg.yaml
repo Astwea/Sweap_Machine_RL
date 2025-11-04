@@ -1,11 +1,11 @@
 params:
   # 1. 通用参数
   # 1.1 随机种子设置
-  seed: 42 # 确保实验的可重复性
+  seed: 50 # 确保实验的可重复性
 
   # 2. 环境参数
   env:
-    clip_actions: 1.0  # 动作值的裁剪范围，限制输出动作的幅度
+    clip_actions: 1.0  # 动作值的裁剪范围（已由模型内部tanh限制，这里主要用于安全保护）
 
   # 3. 算法选择
   algo:
@@ -22,27 +22,39 @@ params:
     separate: False  # 是否使用独立的 actor 和 critic 网络
     rnn:
       name: gru
-      units: 128
-      layers: 1   # 可选，默认=1
+      units: 256  # 增加RNN容量
+      layers: 2   # 增加RNN层数，提高序列建模能力
     # 4.3 连续动作空间配置
     space:
       continuous:
-        mu_activation: None  # 平均值输出层的激活函数
-        sigma_activation: None  # 标准差输出层的激活函数
+        # 使用tanh激活函数将动作限制在[-1, 1]，然后通过scale缩放到实际范围
+        # 这样限幅是模型的一部分，可以参与梯度反向传播
+        mu_activation: "tanh"  # 使用tanh将动作输出限制在[-1, 1]
+        # 重要：添加sigma激活函数防止log_std变得过大导致KL散度爆炸
+        # Softplus确保sigma始终为正值，且不会过大，防止数值不稳定
+        sigma_activation: "softplus"  # 使用Softplus激活函数确保sigma > 0且数值稳定
+        # 关键：硬限制sigma的范围，防止KL散度爆炸（5e20级别）
+        min_sigma: 1e-6  # 最小sigma值，防止除零错误
+        max_sigma: 0.3   # 最大sigma值，严格限制探索范围，防止KL散度爆炸
+        # 如果KL散度仍然爆炸，可以进一步降低max_sigma到0.2或0.1
 
         # 4.3.1 平均值初始化
         mu_init:
           name: default  # 使用默认初始化方法
 
-        # 4.3.2 标准差初始化
+        # 4.3.2 标准差初始化 - 降低初始探索以稳定训练
         sigma_init:
           name: const_initializer  # 使用常数初始化方法
-          val: 0.5  # 初始化值设为0
+          val: -2.0  # log_std的初始值（对应sigma ≈ 0.14），大幅降低初始探索，更稳定
+          # 注意：这是log_std的初始值，实际sigma = exp(log_std)
+          # 从-1.0降低到-2.0以应对KL散度爆炸问题
         fixed_sigma: False  # 是否使用固定的标准差
+        # 注意：动作缩放需要在环境代码中实现，以确保梯度可以传播
+        # tanh输出[-1,1]，在环境代码中乘以缩放因子得到实际动作范围
 
-      # 4.4 MLP 网络参数
+      # 4.4 MLP 网络参数 - 优化后的网络结构
     mlp:
-      units: [128, 128]  # MLP 隐藏层神经元数量
+      units: [256, 256]  # MLP 隐藏层神经元数量 - 增加网络容量
       activation: elu  # 使用 ELU 激活函数
       d2rl: True  # 是否使用 D2RL 架构增强（Deep Dense ReLU）
 
@@ -56,7 +68,7 @@ params:
 
   # 5. 检查点加载配置
   load_checkpoint: False # 是否从检查点加载模型
-  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-24_14-41-18/nn/last_diff_drive_direct_ep_2450_rew_-183.03473.pth'  # 检查点路径
+  load_path: '/home/astwea/MyDogTask/Mydog/logs/rl_games/diff_drive_direct/2025-06-29_09-06-50/nn/diff_drive_direct.pth'  # 检查点路径
 
   # 6. 训练配置
   config:
@@ -67,42 +79,57 @@ params:
     device_name: 'cuda:0'  # 设备名称
     multi_gpu: False  # 是否使用多 GPU 训练
     ppo: True  # 使用 PPO 算法增强
-    mixed_precision: True  # 是否使用混合精度训练
-    normalize_input: False  # 是否归一化输入数据
+    mixed_precision: False # 是否使用混合精度训练 - 启用以节省显存
+    normalize_input: True  # 是否归一化输入数据（启用以防止观测异常导致KL散度NaN）
     normalize_value: True  # 是否归一化价值函数输出
     value_bootstrap: True  # 是否使用价值引导
 
     # 6.2 并行设置
-    num_actors: -1  # 环境实例数量，-1 表示自动配置
+    # 控制频率降低到5Hz后，动作更新计算负担减少，可以支持更多环境
+    # RTX 3060 6GB + 16GB内存：建议96个环境（如果显存不足可降回64）
+    num_actors: 96  # 环境实例数量 - 从48增加到96，提高样本产出效率
 
     # 6.3 奖励设置
     reward_shaper:
       scale_value: 1.0 # 奖励缩放系数
 
-    # 6.4 策略优化参数
+    # 6.4 策略优化参数 - 针对KL散度爆炸（5e20）优化
     normalize_advantage: True  # 归一化优势函数
-    gamma: 0.99  # 折扣因子
-    tau: 0.95  # GAE（广义优势估计）衰减因子
-    learning_rate: 5e-5  # 学习率
+    # 由于回合更长（60秒），需要调整折扣因子以保持长期奖励
+    gamma: 0.998  # 折扣因子 - 提高以应对更长的回合（从0.995提高到0.998）
+    tau: 0.98  # GAE（广义优势估计）衰减因子 - 减少方差
+    # 关键：大幅降低学习率以应对KL散度爆炸（5e20级别）
+    learning_rate: 5e-6  # 学习率 - 从2e-5降低到5e-6，防止策略更新过快导致KL散度爆炸
     lr_schedule: adaptive  # 自适应学习率调度
     schedule_type: legacy  # 学习率调度类型
-    kl_threshold: 0.01  # KL 散度阈值
+    # 关键：大幅提高KL散度阈值，当KL散度超过阈值时触发学习率衰减
+    # 从0.015提高到0.1，让自适应学习率调度更早触发，防止KL散度爆炸
+    kl_threshold: 0.1  # KL 散度阈值 - 大幅提高以应对KL散度爆炸问题
     score_to_win: 20000  # 期望的最高分数（训练目标）
     max_epochs: 150000000  # 最大训练轮数
     save_best_after: 100  # 在指定轮次后保存最佳模型
     save_frequency: 50  # 每隔多少轮保存模型
-    grad_norm: 1.0  # 梯度裁剪阈值
-    entropy_coef: 0.004  # 熵奖励系数（鼓励探索）
+    # 关键：降低梯度裁剪阈值，更严格地限制梯度，防止KL散度爆炸
+    grad_norm: 0.5  # 梯度裁剪阈值 - 从1.0降低到0.5，更严格地限制梯度更新
+    entropy_coef: 0.002  # 熵奖励系数 - 增加探索
     truncate_grads: True  # 是否裁剪梯度
 
-    # 6.5 PPO 参数
+    # 6.5 PPO 参数 - 针对控制频率5Hz（decimation=40）优化
     e_clip: 0.2  # PPO 剪辑范围
-    horizon_length: 64  # PPO 轨迹长度
-    minibatch_size: 32768  # 最小批量大小
-    mini_epochs: 5  # 每个批量的训练轮次
+    # 重新计算horizon_length：控制频率5Hz（每0.2秒一个动作步）
+    # 关键：horizon_length必须是seq_length的整数倍！否则会导致索引越界错误
+    # horizon_length=96 意味着19.2秒的数据（96*0.2=19.2秒）
+    # 96 = 32 * 3，正好是seq_length的3倍，符合rl_games的要求
+    horizon_length: 96  # PPO 轨迹长度 - 19.2秒数据（96个动作步），必须是seq_length的整数倍
+    minibatch_size: 64  # 最小批量大小 - 保持与horizon_length匹配
+    mini_epochs: 4  # 每个批量的训练轮次 - 减少过拟合
     critic_coef: 1.0  # 价值函数损失系数
     clip_value: True  # 是否裁剪价值函数输出
 
-    # 6.6 序列和边界损失
-    seq_length: 4  # RNN 序列长度
+    # 6.6 序列和边界损失 - 针对控制频率5Hz（decimation=40）优化
+    # 重新计算seq_length：控制频率5Hz（每0.2秒一个动作步）
+    # 注意：seq_length必须 <= horizon_length，通常设为horizon_length的1/2到2/3
+    # seq_length=32 意味着6.4秒的历史（32*0.2=6.4秒），足够捕获短期时序依赖
+    # 降低seq_length可以减少初始数据收集时间，加快训练更新
+    seq_length: 32  # RNN 序列长度 - 对应6.4秒的历史（32个动作步，适合5Hz控制频率）
     bounds_loss_coef: 0.01  # 边界损失系数（如果需要约束动作范围）

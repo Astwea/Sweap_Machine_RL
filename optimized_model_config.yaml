@@ -1,0 +1,175 @@
+# 优化的模型配置文件
+params:
+  # 1. 通用参数
+  seed: 50
+
+  # 2. 环境参数
+  env:
+    clip_actions: 1.0
+    clip_observations: 10.0  # 添加观测裁剪
+    normalize_observations: True  # 添加观测归一化
+
+  # 3. 算法选择
+  algo:
+    name: ppo_continuous  # 使用PPO而不是A2C
+
+  # 4. 模型参数
+  model:
+    name: continuous_ppo_logstd
+
+  # 5. 网络结构（优化版）
+  network:
+    name: actor_critic
+    separate: True  # 使用独立的actor和critic网络
+    
+    # Actor网络
+    actor:
+      units: [256, 256, 128]  # 增加网络容量
+      activation: elu
+      d2rl: True
+      dropout: 0.1  # 添加dropout
+      batch_norm: True  # 添加批归一化
+      
+    # Critic网络
+    critic:
+      units: [256, 256, 128]
+      activation: elu
+      d2rl: True
+      dropout: 0.1
+      batch_norm: True
+    
+    # RNN配置（优化版）
+    rnn:
+      name: gru
+      units: 256  # 增加RNN容量
+      layers: 2   # 增加层数
+      dropout: 0.1
+      bidirectional: False
+      
+    # 注意力机制（新增）
+    attention:
+      enabled: True
+      heads: 4
+      key_dim: 64
+      value_dim: 64
+      dropout: 0.1
+      
+    # 连续动作空间配置
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: torch.nn.Softplus  # 使用Softplus确保正值
+        mu_init:
+          name: xavier_uniform
+        sigma_init:
+          name: const_initializer
+          val: 0.1  # 降低初始标准差
+        fixed_sigma: False
+
+  # 6. 训练配置（优化版）
+  config:
+    name: diff_drive_direct_optimized
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: True  # 启用混合精度
+    normalize_input: True  # 启用输入归一化
+    normalize_value: True
+    value_bootstrap: True
+
+    # 并行设置
+    num_actors: -1
+
+    # 奖励设置
+    reward_shaper:
+      scale_value: 1.0
+      clip_reward: 10.0  # 添加奖励裁剪
+
+    # 策略优化参数（优化版）
+    normalize_advantage: True
+    gamma: 0.995  # 提高折扣因子
+    tau: 0.98     # 提高GAE参数
+    learning_rate: 3e-4  # 降低学习率
+    lr_schedule: linear  # 使用线性学习率调度
+    schedule_type: standard
+    kl_threshold: 0.008  # 降低KL散度阈值
+    score_to_win: 20000
+    max_epochs: 200000  # 增加训练轮数
+    save_best_after: 200
+    save_frequency: 100
+    grad_norm: 0.5  # 降低梯度裁剪阈值
+    entropy_coef: 0.01  # 增加熵系数
+    truncate_grads: True
+
+    # PPO参数（优化版）
+    e_clip: 0.15  # 降低裁剪范围
+    horizon_length: 64  # 增加轨迹长度
+    minibatch_size: 256  # 增加批量大小
+    mini_epochs: 8  # 增加小批量训练轮数
+    critic_coef: 0.5  # 降低critic损失系数
+    clip_value: True
+    value_loss_coef: 0.5  # 添加价值损失系数
+
+    # 序列和边界损失
+    seq_length: 8  # 增加序列长度
+    bounds_loss_coef: 0.001  # 降低边界损失系数
+    
+    # 正则化（新增）
+    weight_decay: 1e-4  # L2正则化
+    gradient_penalty: 0.1  # 梯度惩罚
+    
+    # 探索策略（新增）
+    exploration:
+      type: "epsilon_greedy"
+      epsilon_start: 0.9
+      epsilon_end: 0.05
+      epsilon_decay: 0.995
+      
+    # 课程学习（新增）
+    curriculum:
+      enabled: True
+      difficulty_levels: 5
+      progress_threshold: 0.8
+      
+    # 早停（新增）
+    early_stopping:
+      enabled: True
+      patience: 50
+      min_delta: 0.01
+      
+    # 模型保存（优化版）
+    save_interval: 1000
+    keep_checkpoints: 5
+    save_optimizer: True
+    
+    # 日志记录（优化版）
+    log_interval: 10
+    log_level: "INFO"
+    tensorboard_log: True
+    wandb_log: False  # 使用tensorboard
+    
+    # 验证（新增）
+    validation:
+      enabled: True
+      interval: 1000
+      episodes: 10
+      
+    # 回放缓冲区（新增）
+    replay_buffer:
+      size: 100000
+      alpha: 0.6  # 优先级回放的alpha
+      beta: 0.4   # 优先级回放的beta
+      
+    # 数据增强（新增）
+    data_augmentation:
+      enabled: True
+      noise_std: 0.01
+      rotation_std: 0.05
+      
+    # 多任务学习（新增）
+    multi_task:
+      enabled: False
+      task_weights: [1.0]
+      task_switching: "random"

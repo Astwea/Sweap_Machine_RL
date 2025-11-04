@@ -8,6 +8,9 @@ class DifferentialDriveMPC:
         self.dt = dt
         self._build_model()
 
+    def wrap_angle(self, angle):
+        return ca.fmod(angle + ca.pi, 2 * ca.pi) - ca.pi
+
     def _build_model(self):
         N = self.horizon
         dt = self.dt
@@ -42,11 +45,18 @@ class DifferentialDriveMPC:
 
         # 目标函数
         cost = 0
+        angle_cost = 0
+        pos_cost = 0
+        vel_cost = 0
         for k in range(N):
             theta_ref = ca.atan2(y_ref[k] - y[k] +1e-6, x_ref[k] - x[k] +1e-6)
-            angle_diff = theta[k] - theta_ref
-            cost += 0.2 * angle_diff**2
-            cost += (x[k] - x_ref[k])**2 + (y[k] - y_ref[k])**2 + 0.1*v[k]**2 + 0.01*w[k]**2
+            angle_diff = (theta[k] - theta_ref)
+
+            angle_cost += 5.0 * (1 - ca.cos(angle_diff))**2
+            vel_cost += 1.0 * ca.fmax(0, -v[k])**2 + 0.01*v[k]**2
+            pos_cost += (x[k] - x_ref[k])**2 + (y[k] - y_ref[k])**2
+
+        cost = angle_cost + pos_cost + vel_cost
         opti.minimize(cost)
 
         # 求解器配置
@@ -54,6 +64,9 @@ class DifferentialDriveMPC:
         opti.solver("ipopt", opts)
 
         self.opti = opti
+        self.angle_cost = angle_cost
+        self.pos_cost = pos_cost
+        self.vel_cost = vel_cost
         self.vars = {
             "x": x, "y": y, "theta": theta, "v": v, "w": w,
             "x_ref": x_ref, "y_ref": y_ref,
@@ -78,6 +91,9 @@ class DifferentialDriveMPC:
 
         try:
             sol = opti.solve()
+            print("angle_cost =", float(sol.value(self.angle_cost)))
+            print("pos_cost   =", float(sol.value(self.pos_cost)))
+            print("vel_cost   =", float(sol.value(self.vel_cost)))
             v0 = float(sol.value(self.vars["v"][0]))
             w0 = float(sol.value(self.vars["w"][0]))
             return np.array([v0, w0], dtype=np.float32)
